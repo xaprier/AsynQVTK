@@ -35,6 +35,11 @@ class AsyncRenderView : public QOpenGLWidget {
     // interactor exist and are safe to configure via execute().
     void ready();
 
+    // Emitted at the end of paintGL() whenever a new frame produced by the
+    // worker was actually drawn this call (not every paintGL() call draws a
+    // new frame — some just redraw the same texture).
+    void frameSwapped();
+
   protected:
     void initializeGL() override;
     void resizeGL(int w, int h) override;

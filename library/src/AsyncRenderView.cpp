@@ -83,6 +83,7 @@ void AsyncRenderView::paintGL() {
     auto* f = context()->extraFunctions();
 
     Frame previous;
+    bool drewNewFrame = false;
     if (m_pending.valid()) {
         // Wait on the GPU side for the worker's render to finish instead of
         // blocking the GUI thread.
@@ -94,6 +95,7 @@ void AsyncRenderView::paintGL() {
         m_current = m_pending;
         m_current.fence = 0;
         m_pending = Frame{};
+        drewNewFrame = true;
     }
 
     f->glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
@@ -122,6 +124,9 @@ void AsyncRenderView::paintGL() {
         f->glFlush();
         releaseToWorker(previous, reinterpret_cast<quintptr>(done));
     }
+
+    if (drewNewFrame)
+        emit frameSwapped();
 }
 
 void AsyncRenderView::releaseToWorker(const Frame& frame,
