@@ -188,15 +188,26 @@ void AsyncSphereController::SetColor(const Vec3& rgb) {
 }
 
 double AsyncSphereController::GetRadius() const {
+    if (m_mutex) {
+        QMutexLocker lock(m_mutex);
+        return m_sphereSource->GetRadius();
+    }
     return m_sphereSource->GetRadius();
 }
 
 AsyncSphereController::Vec3 AsyncSphereController::GetPosition() const {
     double c[3];
-    m_sphereSource->GetCenter(c);
+    if (m_mutex) {
+        QMutexLocker lock(m_mutex);
+        m_sphereSource->GetCenter(c);
+    } else {
+        m_sphereSource->GetCenter(c);
+    }
     return {c[0], c[1], c[2]};
 }
 
+// Reads a pane-owned actor's property; acceptable relaxation (simple scalar
+// read, not a mutation) — same tradeoff as CornerAnnotationOverlay (Task 2).
 AsyncSphereController::Vec3 AsyncSphereController::GetColor() const {
     double rgb[3] = {1.0, 0.3, 0.3};
     if (!m_panes.empty() && m_panes.front().actor)
@@ -240,10 +251,18 @@ void AsyncSphereController::OnLeftButtonDown(vtkObject* caller, unsigned long, v
     if (!renderer)
         return;
 
-    self->m_picker->Pick(pos[0], pos[1], 0.0, renderer);
+    vtkActor* pickedActor = nullptr;
+    if (self->m_mutex) {
+        QMutexLocker lock(self->m_mutex);
+        self->m_picker->Pick(pos[0], pos[1], 0.0, renderer);
+        pickedActor = self->m_picker->GetActor();
+    } else {
+        self->m_picker->Pick(pos[0], pos[1], 0.0, renderer);
+        pickedActor = self->m_picker->GetActor();
+    }
 
     auto* expectedActor = self->ActorFor(renderer);
-    if (self->m_picker->GetActor() != expectedActor)
+    if (pickedActor != expectedActor)
         return;
 
     self->m_isDragging = true;
@@ -282,7 +301,12 @@ void AsyncSphereController::OnMouseMove(vtkObject* caller, unsigned long, void* 
     const double rayFar[3] = {far4[0] / far4[3], far4[1] / far4[3], far4[2] / far4[3]};
 
     double center[3];
-    self->m_sphereSource->GetCenter(center);
+    if (self->m_mutex) {
+        QMutexLocker lock(self->m_mutex);
+        self->m_sphereSource->GetCenter(center);
+    } else {
+        self->m_sphereSource->GetCenter(center);
+    }
 
     double normal[3] = {0.0, 0.0, 0.0};
     switch (self->m_activePlane) {
