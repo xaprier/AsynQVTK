@@ -2,17 +2,10 @@
 
 #include <QVTKInteractor.h>
 #include <QVTKInteractorAdapter.h>
-#include <vtkActor.h>
 #include <vtkCallbackCommand.h>
-#include <vtkCamera.h>
 #include <vtkGenericOpenGLRenderWindow.h>
-#include <vtkInteractorStyleTrackballCamera.h>
 #include <vtkNew.h>
 #include <vtkOpenGLState.h>
-#include <vtkPolyDataMapper.h>
-#include <vtkProperty.h>
-#include <vtkRenderer.h>
-#include <vtkSphereSource.h>
 
 #include <QDebug>
 #include <QEvent>
@@ -22,7 +15,6 @@
 #include <QOpenGLExtraFunctions>
 #include <QOpenGLFramebufferObject>
 #include <QThread>
-#include <QTimer>
 #include <algorithm>
 
 namespace {
@@ -82,33 +74,21 @@ void AsyncRenderWorker::initialize() {
     m_renderWindow->AddObserver(vtkCommand::WindowIsCurrentEvent,
                                 contextCommand);
 
-    m_renderer = vtkSmartPointer<vtkRenderer>::New();
-    m_renderer->SetBackground(0.1, 0.2, 0.3);
-    m_renderWindow->AddRenderer(m_renderer);
-
     // Interactor only updates the camera; render is triggered by us.
+    // No default renderer or interactor style: the caller builds its own
+    // scene and installs it via execute() once initialized() fires.
     m_interactor = vtkSmartPointer<QVTKInteractor>::New();
     m_interactor->SetRenderWindow(m_renderWindow);
     m_interactor->EnableRenderOff();
-    vtkNew<vtkInteractorStyleTrackballCamera> style;
-    m_interactor->SetInteractorStyle(style);
     m_interactor->Initialize();
     m_interactorAdapter = new QVTKInteractorAdapter(this);
 
-    m_animationTimer = new QTimer(this);
-    m_animationTimer->setInterval(16);
-    connect(m_animationTimer, &QTimer::timeout, this, [this]() {
-        m_renderer->GetActiveCamera()->Azimuth(1.0);
-        requestRender();
-    });
+    emit initialized();
 }
 
 void AsyncRenderWorker::shutdown() {
     if (!m_context) {
         return;
-    }
-    if (m_animationTimer) {
-        m_animationTimer->stop();
     }
 
     makeCurrent();
@@ -130,7 +110,6 @@ void AsyncRenderWorker::shutdown() {
     m_renderFbo = nullptr;
 
     m_interactor = nullptr;
-    m_renderer = nullptr;
     m_renderWindow = nullptr;
 
     m_context->doneCurrent();
@@ -165,36 +144,21 @@ void AsyncRenderWorker::processEvent(std::shared_ptr<QEvent> event) {
     requestRender();
 }
 
-void AsyncRenderWorker::addSphere() {
-    if (!m_context) {
+void AsyncRenderWorker::execute(std::function<void(vtkGenericOpenGLRenderWindow*)> fn) {
+    if (!m_context || !fn) {
         return;
     }
-    // Each call adds a new sphere, laid out along the x axis.
-    const int index = m_renderer->GetActors()->GetNumberOfItems();
-
-    vtkNew<vtkSphereSource> sphere;
-    sphere->SetCenter(index * 1.5, 0.0, 0.0);
-    sphere->SetRadius(0.5);
-    sphere->SetThetaResolution(32);
-    sphere->SetPhiResolution(32);
-
-    vtkNew<vtkPolyDataMapper> mapper;
-    mapper->SetInputConnection(sphere->GetOutputPort());
-
-    vtkNew<vtkActor> actor;
-    actor->SetMapper(mapper);
-    actor->GetProperty()->SetColor(1.0, 0.6, 0.2);
-
-    m_renderer->AddActor(actor);
-    m_renderer->ResetCamera();
+    makeCurrent();
+    fn(m_renderWindow);
     requestRender();
 }
 
-void AsyncRenderWorker::setAnimating(bool animating) {
-    if (!m_animationTimer) {
-        return;
-    }
-    animating ? m_animationTimer->start() : m_animationTimer->stop();
+vtkGenericOpenGLRenderWindow* AsyncRenderWorker::renderWindow() const {
+    return m_renderWindow;
+}
+
+QVTKInteractor* AsyncRenderWorker::interactor() const {
+    return m_interactor;
 }
 
 void AsyncRenderWorker::requestRender() {

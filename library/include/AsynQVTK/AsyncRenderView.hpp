@@ -4,8 +4,10 @@
 #include <QOpenGLTextureBlitter>
 #include <QOpenGLWidget>
 #include <QThread>
+#include <functional>
 
 class AsyncRenderWorker;
+class vtkGenericOpenGLRenderWindow;
 
 // GUI side: does not render itself, only blits the shared texture produced
 // by the worker thread and forwards user input to it.
@@ -16,9 +18,22 @@ class AsyncRenderView : public QOpenGLWidget {
     explicit AsyncRenderView(QWidget* parent = nullptr);
     ~AsyncRenderView() override;
 
-    // Thread-safe: queued to the worker thread.
-    void addSphere();
-    void setAnimating(bool animating);
+    // Runs fn on the worker thread (with its GL context current), passing
+    // it the render window, and requests a render afterwards. This is how
+    // callers build and mutate their VTK scene — renderers, actors,
+    // interactor style, observers (window->GetInteractor()), and so on.
+    // Queued: returns immediately, fn runs asynchronously.
+    void execute(std::function<void(vtkGenericOpenGLRenderWindow*)> fn);
+
+    // Same as execute(), but blocks the calling thread until fn has run.
+    // Use for setup that must complete before the next line of GUI code
+    // depends on it (e.g. initial pipeline construction).
+    void executeBlocking(std::function<void(vtkGenericOpenGLRenderWindow*)> fn);
+
+  signals:
+    // Forwarded from the worker thread once its render window and
+    // interactor exist and are safe to configure via execute().
+    void ready();
 
   protected:
     void initializeGL() override;

@@ -5,22 +5,32 @@
 #include <QObject>
 #include <QSize>
 #include <array>
+#include <functional>
 #include <memory>
 
 class QEvent;
 class QOffscreenSurface;
 class QOpenGLContext;
 class QOpenGLFramebufferObject;
-class QTimer;
 class QVTKInteractor;
 class QVTKInteractorAdapter;
 class vtkGenericOpenGLRenderWindow;
 class vtkObject;
-class vtkRenderer;
 
-// Lives on its own thread and renders the VTK scene into its own offscreen
-// GL context. The result is handed off as a texture shared with the GUI
-// context.
+// Lives on its own thread and renders a caller-supplied VTK scene into its
+// own offscreen GL context. The result is handed off as a texture shared
+// with the GUI context.
+//
+// This class owns only the render window, interactor and GL plumbing. It has
+// no opinion about what is rendered: callers build their own renderer(s),
+// actors and interactor style and install them via execute(), which runs
+// arbitrary code on the worker thread with the GL context current.
+//
+// renderWindow() and interactor() are only safe to call from code already
+// running on the worker thread (i.e. from inside an execute() callback, or
+// from another slot of this class) — never from the GUI thread directly.
+// execute() also hands the render window to its callback directly, which
+// covers most needs (window->GetInteractor(), window->GetRenderers(), ...).
 //
 // Frame flow (triple buffering):
 //   worker: take a free slot -> wait on its release fence -> VTK render ->
@@ -36,6 +46,10 @@ class AsyncRenderWorker : public QObject {
                                QObject* parent = nullptr);
     ~AsyncRenderWorker() override;
 
+    // Worker-thread-only accessors; valid once initialized() has fired.
+    vtkGenericOpenGLRenderWindow* renderWindow() const;
+    QVTKInteractor* interactor() const;
+
   public slots:
     // All of the following run on the worker thread.
     void initialize();
@@ -43,11 +57,19 @@ class AsyncRenderWorker : public QObject {
     void resize(QSize deviceSize, qreal devicePixelRatio);
     void releaseFrame(int slot, quintptr releaseFence);
     void processEvent(std::shared_ptr<QEvent> event);
-    void addSphere();
-    void setAnimating(bool animating);
+
+    // Runs fn on the worker thread with the GL context current, passing it
+    // the render window, then requests a render. Callers configure their
+    // scene (renderers, actors, interactor style, observers, ...) through
+    // this instead of dedicated methods.
+    void execute(std::function<void(vtkGenericOpenGLRenderWindow*)> fn);
 
   signals:
     void frameReady(int slot, uint textureId, quintptr readyFence, QSize size);
+
+    // Fired on the worker thread once the context, render window and
+    // interactor exist and are safe to configure via execute().
+    void initialized();
 
   private:
     struct Slot {
@@ -72,10 +94,8 @@ class AsyncRenderWorker : public QObject {
     std::array<Slot, 3> m_slots;
 
     vtkSmartPointer<vtkGenericOpenGLRenderWindow> m_renderWindow;
-    vtkSmartPointer<vtkRenderer> m_renderer;
     vtkSmartPointer<QVTKInteractor> m_interactor;
     QVTKInteractorAdapter* m_interactorAdapter = nullptr;
-    QTimer* m_animationTimer = nullptr;
 
     QSize m_size;
     bool m_renderQueued = false;

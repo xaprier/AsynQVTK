@@ -21,6 +21,7 @@ AsyncRenderView::AsyncRenderView(QWidget* parent)
     connect(&m_thread, &QThread::started, m_worker, &AsyncRenderWorker::initialize);
     connect(&m_thread, &QThread::finished, m_worker, &QObject::deleteLater);
     connect(m_worker, &AsyncRenderWorker::frameReady, this, &AsyncRenderView::onFrameReady);
+    connect(m_worker, &AsyncRenderWorker::initialized, this, &AsyncRenderView::ready);
     m_thread.start();
 }
 
@@ -40,19 +41,20 @@ AsyncRenderView::~AsyncRenderView() {
     m_thread.wait();
 }
 
-void AsyncRenderView::addSphere() {
-    QMetaObject::invokeMethod(
-        m_worker,
-        &AsyncRenderWorker::addSphere,
-        Qt::QueuedConnection);
-}
-
-void AsyncRenderView::setAnimating(bool animating) {
+void AsyncRenderView::execute(std::function<void(vtkGenericOpenGLRenderWindow*)> fn) {
     AsyncRenderWorker* worker = m_worker;
     QMetaObject::invokeMethod(
         worker,
-        [worker, animating]() { worker->setAnimating(animating); },
+        [worker, fn]() { worker->execute(fn); },
         Qt::QueuedConnection);
+}
+
+void AsyncRenderView::executeBlocking(std::function<void(vtkGenericOpenGLRenderWindow*)> fn) {
+    AsyncRenderWorker* worker = m_worker;
+    QMetaObject::invokeMethod(
+        worker,
+        [worker, fn]() { worker->execute(fn); },
+        Qt::BlockingQueuedConnection);
 }
 
 void AsyncRenderView::initializeGL() { m_blitter.create(); }
