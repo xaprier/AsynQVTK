@@ -9,8 +9,6 @@
 
 #include "overlays/IOverlay.hpp"
 
-class QVTKOpenGLNativeWidget;
-
 namespace overlays {
 
 /**
@@ -50,7 +48,7 @@ class OrientationMarkerOverlay : public QWidget, public IOverlay {
         SliceOrientation::Sagittal,
     };
 
-    explicit OrientationMarkerOverlay(QVTKOpenGLNativeWidget* host,
+    explicit OrientationMarkerOverlay(QWidget* host,
                                       SliceOrientation orientation = SliceOrientation::Axial);
     ~OrientationMarkerOverlay() override;
 
@@ -101,7 +99,7 @@ class OrientationMarkerOverlay : public QWidget, public IOverlay {
                     int vpLeft, int vpTop, int vpRight, int vpBot,
                     int vpW, int vpH) const;
 
-    QVTKOpenGLNativeWidget* m_host{nullptr};
+    QWidget* m_host{nullptr};
     SliceOrientation m_orientation{SliceOrientation::Axial};
     QColor m_textColor{Qt::yellow};
     int m_fontSize{12};

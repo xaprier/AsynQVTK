@@ -10,6 +10,7 @@
 #include "overlays/IOverlay.hpp"
 
 class QVTKOpenGLNativeWidget;
+class AsyncRenderView;
 class vtkResliceImageViewer;
 
 namespace overlays {
@@ -33,6 +34,8 @@ class CornerAnnotationOverlay : public QWidget, public IOverlay {
 
   public:
     explicit CornerAnnotationOverlay(QVTKOpenGLNativeWidget* host,
+                                     const QString& viewName = QString());
+    explicit CornerAnnotationOverlay(AsyncRenderView* host,
                                      const QString& viewName = QString());
     ~CornerAnnotationOverlay() override;
 
@@ -76,11 +79,12 @@ class CornerAnnotationOverlay : public QWidget, public IOverlay {
     void _OnFrameSwapped();
 
   private:
+    void    _Init(QWidget* host, const QString& viewName);
     QString _BuildText() const;
     void    _Reposition();
     void    _InvalidateFontCache();
 
-    QVTKOpenGLNativeWidget* m_host{nullptr};
+    QWidget*                m_host{nullptr};
     vtkResliceImageViewer*  m_viewer{nullptr};
 
     QString m_viewName;

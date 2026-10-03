@@ -10,16 +10,18 @@
 #include "overlays/IOverlay.hpp"
 
 class QVTKOpenGLNativeWidget;
+class AsyncRenderView;
 
 namespace overlays {
 
 /**
  * @brief Qt-native FPS overlay that lives as a child widget on top of a
- *        QVTKOpenGLNativeWidget and tracks real OpenGL frame swap time.
+ *        render-surface widget and tracks real OpenGL frame swap time.
  *
- * Timing is driven by the host widget's frameSwapped() signal, which fires
- * after each OpenGL buffer swap — this captures the full GPU+CPU round-trip
- * per frame rather than VTK's internal render timer.
+ * Two host types are supported via overload: QVTKOpenGLNativeWidget (its own
+ * frameSwapped() signal) and AsynQVTK's AsyncRenderView (its frameSwapped()
+ * signal, emitted once per worker-produced frame actually drawn). Both route
+ * to the same averaging/update logic.
  *
  * FPS and frame-time values are averaged over a configurable sliding window
  * (default 1 s, adjustable via SetAveragingWindow()) to produce a stable
@@ -33,6 +35,7 @@ class FPSOverlay : public QLabel, public IOverlay {
 
   public:
     explicit FPSOverlay(QVTKOpenGLNativeWidget* host);
+    explicit FPSOverlay(AsyncRenderView* host);
     ~FPSOverlay() override = default;
 
     // ── Visibility ────────────────────────────────────────────────────────────
@@ -57,10 +60,11 @@ class FPSOverlay : public QLabel, public IOverlay {
     void _OnFrameSwapped();
 
   private:
+    void _Init(QWidget* host);
     void _Reposition();
     void _UpdateText(double frameMs, double fps);
 
-    QVTKOpenGLNativeWidget* m_host{nullptr};
+    QWidget* m_host{nullptr};
 
     QElapsedTimer m_frameTimer;
     qint64 m_lastFrameNs{0};

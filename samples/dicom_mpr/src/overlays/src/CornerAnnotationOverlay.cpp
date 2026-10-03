@@ -1,6 +1,7 @@
 #include "overlays/CornerAnnotationOverlay.hpp"
 
 #include <QVTKOpenGLNativeWidget.h>
+#include <AsynQVTK/AsyncRenderView.hpp>
 #include <vtkImageActor.h>
 #include <vtkImageData.h>
 #include <vtkImageProperty.h>
@@ -16,7 +17,23 @@ namespace overlays {
 
 CornerAnnotationOverlay::CornerAnnotationOverlay(QVTKOpenGLNativeWidget* host,
                                                  const QString& viewName)
-    : QWidget(host), m_host(host), m_viewName(viewName) {
+    : QWidget(host) {
+    _Init(host, viewName);
+    connect(host, &QVTKOpenGLNativeWidget::frameSwapped,
+            this, &CornerAnnotationOverlay::_OnFrameSwapped);
+}
+
+CornerAnnotationOverlay::CornerAnnotationOverlay(AsyncRenderView* host,
+                                                 const QString& viewName)
+    : QWidget(host) {
+    _Init(host, viewName);
+    connect(host, &AsyncRenderView::frameSwapped,
+            this, &CornerAnnotationOverlay::_OnFrameSwapped);
+}
+
+void CornerAnnotationOverlay::_Init(QWidget* host, const QString& viewName) {
+    m_host = host;
+    m_viewName = viewName;
     m_position = OverlayPosition::BottomRight;
     setAttribute(Qt::WA_TransparentForMouseEvents);
     setAttribute(Qt::WA_NoSystemBackground);
@@ -24,9 +41,6 @@ CornerAnnotationOverlay::CornerAnnotationOverlay(QVTKOpenGLNativeWidget* host,
     setAutoFillBackground(false);
 
     host->installEventFilter(this);
-
-    connect(host, &QVTKOpenGLNativeWidget::frameSwapped,
-            this, &CornerAnnotationOverlay::_OnFrameSwapped);
 
     resize(host->size().isEmpty() ? QSize(1, 1) : host->size());
     raise();

@@ -1,7 +1,5 @@
 #include "overlays/OrientationMarkerOverlay.hpp"
 
-#include <QVTKOpenGLNativeWidget.h>
-
 #include <QEvent>
 #include <QPainter>
 #include <QPaintEvent>
@@ -28,7 +26,7 @@ static constexpr const char* kLabels[2][3][4] = {
 constexpr OrientationMarkerOverlay::SliceOrientation
     OrientationMarkerOverlay::kSliceOrientations[3];
 
-OrientationMarkerOverlay::OrientationMarkerOverlay(QVTKOpenGLNativeWidget* host,
+OrientationMarkerOverlay::OrientationMarkerOverlay(QWidget* host,
                                                    SliceOrientation orientation)
     : QWidget(host), m_host(host), m_orientation(orientation) {
     setAttribute(Qt::WA_TransparentForMouseEvents);

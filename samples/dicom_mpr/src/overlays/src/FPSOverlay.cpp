@@ -1,6 +1,7 @@
 #include "overlays/FPSOverlay.hpp"
 
 #include <QVTKOpenGLNativeWidget.h>
+#include <AsynQVTK/AsyncRenderView.hpp>
 
 #include <QFont>
 #include <QPalette>
@@ -9,8 +10,21 @@
 
 namespace overlays {
 
-FPSOverlay::FPSOverlay(QVTKOpenGLNativeWidget* host)
-    : QLabel(host), m_host(host) {
+FPSOverlay::FPSOverlay(QVTKOpenGLNativeWidget* host) : QLabel(host) {
+    _Init(host);
+    connect(host, &QVTKOpenGLNativeWidget::frameSwapped,
+            this, &FPSOverlay::_OnFrameSwapped);
+}
+
+FPSOverlay::FPSOverlay(AsyncRenderView* host) : QLabel(host) {
+    _Init(host);
+    connect(host, &AsyncRenderView::frameSwapped,
+            this, &FPSOverlay::_OnFrameSwapped);
+}
+
+void FPSOverlay::_Init(QWidget* host) {
+    m_host = host;
+
     // Transparent background so only the text is visible.
     setAttribute(Qt::WA_TransparentForMouseEvents);
     setAlignment(Qt::AlignLeft | Qt::AlignTop);
@@ -28,12 +42,8 @@ FPSOverlay::FPSOverlay(QVTKOpenGLNativeWidget* host)
     setText(tr("FPS: --\nFrame: -- ms"));
     adjustSize();
 
-    // Drive timing from actual OpenGL frame swaps.
-    connect(host, &QVTKOpenGLNativeWidget::frameSwapped,
-            this, &FPSOverlay::_OnFrameSwapped);
-
     m_frameTimer.start();
-    raise();  // ensure we're on top of the VTK surface
+    raise();  // ensure we're on top of the render surface
     show();
 }
 
