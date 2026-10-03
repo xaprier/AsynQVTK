@@ -28,7 +28,7 @@ class AsyncMultiWindowController : public IAsyncViewController {
 
   public:
     explicit AsyncMultiWindowController(QObject* parent = nullptr);
-    ~AsyncMultiWindowController() override = default;
+    ~AsyncMultiWindowController() override;
 
     [[nodiscard]] AsyncSliceController* GetSliceController() const { return m_sliceController.get(); }
 

@@ -19,6 +19,8 @@ namespace controllers {
 AsyncMultiWindowController::AsyncMultiWindowController(QObject* parent)
     : IAsyncViewController(parent) {}
 
+AsyncMultiWindowController::~AsyncMultiWindowController() = default;
+
 void AsyncMultiWindowController::OnRenderStart(vtkObject*, unsigned long, void* clientData, void*) {
     auto* ctx = static_cast<PaneRenderContext*>(clientData);
     ctx->mutex->lock();
