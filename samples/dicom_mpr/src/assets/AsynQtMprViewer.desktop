@@ -1,0 +1,9 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=AsynQtMprViewer
+Comment=A Qt Widgets + VTK based MPR (Multi-Planar Reconstruction) async viewer example
+Exec=AsynQtMprViewer
+Icon=AsynQtMprViewer
+Categories=Utility;
+Keywords=viewer;mpr

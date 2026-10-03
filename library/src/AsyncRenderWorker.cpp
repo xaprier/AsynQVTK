@@ -1,4 +1,4 @@
-#include "AsyncRenderWorker.hpp"
+#include <AsynQVTK/AsyncRenderWorker.hpp>
 
 #include <QVTKInteractor.h>
 #include <QVTKInteractorAdapter.h>

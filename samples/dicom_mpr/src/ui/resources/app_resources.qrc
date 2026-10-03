@@ -1,0 +1,5 @@
+<RCC>
+    <qresource prefix="/assets">
+        <file alias="AsynQtMprViewer.png">../../assets/AsynQtMprViewer.png</file>
+    </qresource>
+</RCC>

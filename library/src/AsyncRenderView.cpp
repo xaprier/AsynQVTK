@@ -1,4 +1,4 @@
-#include "AsyncRenderView.hpp"
+#include <AsynQVTK/AsyncRenderView.hpp>
 
 #include <QKeyEvent>
 #include <QMouseEvent>
@@ -6,7 +6,7 @@
 #include <QOpenGLExtraFunctions>
 #include <QWheelEvent>
 
-#include "AsyncRenderWorker.hpp"
+#include <AsynQVTK/AsyncRenderWorker.hpp>
 
 AsyncRenderView::AsyncRenderView(QWidget* parent)
     : QOpenGLWidget(parent),

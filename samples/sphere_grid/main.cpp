@@ -12,7 +12,7 @@
 #include <QVBoxLayout>
 #include <QWidget>
 
-#include "AsyncRenderView.hpp"
+#include <AsynQVTK/AsyncRenderView.hpp>
 
 int main(int argc, char* argv[]) {
     // Worker contexts and view contexts must share the same share group so
