@@ -18,7 +18,7 @@
 #include "adapters/DicomMetaDataAdapter.hpp"
 #include "adapters/OverlayLayoutAdapter.hpp"
 #include "controllers/DicomController.hpp"
-#include "controllers/MultiWindowController.hpp"
+#include "controllers/AsyncMultiWindowController.hpp"
 #include "overlays/CornerAnnotationOverlay.hpp"
 #include "overlays/FPSOverlay.hpp"
 #include "overlays/OrientationMarkerOverlay.hpp"
@@ -180,16 +180,19 @@ void MainWindow::_ConnectSignals() {
 
     connect(m_controllerPanel, &ControllerPanel::SphereAddRemoveClicked, this, [this]() {
         m_multiWindowView->GetController()->ToggleSphere();
+        m_viewportView->GetController()->ToggleSphere();
     });
 
     connect(m_controllerPanel, &ControllerPanel::SphereRadiusChanged, this, [this](double radius) {
         m_multiWindowView->GetController()->SetSphereRadius(radius);
+        m_viewportView->GetController()->SetSphereRadius(radius);
     });
 
     connect(m_controllerPanel, &ControllerPanel::SphereColorChanged, this, [this](const QColor& color) {
         std::array<double, 3> rgb;
         adapters::ColorAdapter::QColorToRGB(color, rgb);
         m_multiWindowView->GetController()->SetSphereColor(rgb);
+        m_viewportView->GetController()->SetSphereColor(rgb);
     });
 
     connect(m_dicomController, &controllers::DicomController::StatusChanged, this, [this](const QString& message) {
@@ -197,7 +200,9 @@ void MainWindow::_ConnectSignals() {
     });
 
     connect(m_dicomController, &controllers::DicomController::ImageDataReady,
-            m_multiWindowView->GetController(), &controllers::MultiWindowController::SetImageData);
+            m_multiWindowView->GetController(), &controllers::AsyncMultiWindowController::SetImageData);
+    connect(m_dicomController, &controllers::DicomController::ImageDataReady,
+            m_viewportView->GetController(), &controllers::ViewportController::SetImageData);
 
     connect(m_controllerPanel, &ControllerPanel::FPSOverlayEnableChanged, this, [this](bool enabled) {
         _ForEachOverlay<overlays::FPSOverlay>([enabled](auto* ov) { ov->SetEnabled(enabled); });
