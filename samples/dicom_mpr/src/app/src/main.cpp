@@ -1,20 +1,26 @@
 #include <QVTKOpenGLNativeWidget.h>
+#include <vtkTimerLog.h>
 
 #include <QCoreApplication>
+#include <QMetaType>
+#include <array>
 
 #include "app/Application.hpp"
 #include "ui/MainWindow.hpp"
 
 int main(int argc, char* argv[]) {
-    // Must be set before the QApplication is constructed. Without it,
-    // QOpenGLWidget (AsyncRenderView) contexts are not guaranteed to belong
-    // to the same share group as QOpenGLContext::globalShareContext(), which
-    // is what AsyncRenderWorker's per-pane worker-thread contexts share
-    // with. Textures created on a worker thread would then not reliably be
-    // visible to the GUI-thread QOpenGLWidget that blits them.
+    // must be set before QApplication, needed for worker-thread/GUI-thread GL context sharing
     QCoreApplication::setAttribute(Qt::AA_ShareOpenGLContexts);
+    QSurfaceFormat::setDefaultFormat(QVTKOpenGLNativeWidget::defaultFormat());
+
+    // VTK 8.2.0: vtkTimerLog is unlocked and global, corrupts under concurrent renders
+    vtkTimerLog::LoggingOff();
 
     app::Application application(argc, argv);
+
+    // needed for the cross-thread SphereMoved -> OnSphereUpdated queued connection
+    using Vec3 = std::array<double, 3>;
+    qRegisterMetaType<Vec3>("Vec3");
 
     ui::MainWindow window;
     window.show();
