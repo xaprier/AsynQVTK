@@ -234,10 +234,17 @@ void AsyncSliceController::OnSphereUpdated(const Vec3& worldPos) {
         vtkResliceImageViewer* riv = m_rivs[static_cast<size_t>(i)];
         const size_t pi = static_cast<size_t>(i);
 
+        // Intentionally unclamped: GetSliceMin()/GetSliceMax() are NOT plain
+        // field getters, they call GetSliceRange(), which calls
+        // input->UpdateInformation() -- an actual pipeline call. This runs
+        // on the GUI thread (SphereMoved is a cross-thread queued
+        // connection), while this pane's worker thread may be concurrently
+        // rendering, so touching the pipeline here is unsafe. SetSlice()
+        // below already clamps internally to the valid range, and runs on
+        // the worker thread (inside execute()'s lambda), where it's safe.
         const int sliceIdx = static_cast<int>((worldPos[ax] - origin[ax]) / spacing[ax] + 0.5);
-        const int clamped = std::max(riv->GetSliceMin(), std::min(riv->GetSliceMax(), sliceIdx));
 
-        m_pendingSlice[pi].store(clamped, std::memory_order_relaxed);
+        m_pendingSlice[pi].store(sliceIdx, std::memory_order_relaxed);
 
         // skip if a dispatch is already in flight for this pane, it'll pick up the latest m_pendingSlice
         if (m_sliceUpdateInFlight[pi].exchange(true, std::memory_order_acq_rel))
@@ -246,10 +253,25 @@ void AsyncSliceController::OnSphereUpdated(const Vec3& worldPos) {
         std::atomic<int>* pending = &m_pendingSlice[pi];
         std::atomic<bool>* inFlight = &m_sliceUpdateInFlight[pi];
         m_views[pi]->execute([riv, pending, inFlight](vtkGenericOpenGLRenderWindow*) {
-            const int target = pending->load(std::memory_order_relaxed);
-            if (riv->GetSlice() != target)
-                riv->SetSlice(target);
-            inFlight->store(false, std::memory_order_release);
+            // Loop rather than apply-once: if a newer slice index was
+            // written (whose OnSphereUpdated() call saw inFlight still
+            // true, so it skipped dispatching, trusting us to pick it up)
+            // after we read `target` below but before we clear inFlight,
+            // that write would otherwise never get applied. Re-check after
+            // clearing the flag and, if the value moved on and nobody else
+            // has claimed the slot, apply the latest value too.
+            while (true) {
+                const int target = pending->load(std::memory_order_relaxed);
+                if (riv->GetSlice() != target)
+                    riv->SetSlice(target);
+
+                inFlight->store(false, std::memory_order_release);
+
+                if (pending->load(std::memory_order_relaxed) == target)
+                    break;  // nothing changed while we were applying it
+                if (inFlight->exchange(true, std::memory_order_acq_rel))
+                    break;  // someone else already claimed it and will dispatch
+            }
         });
     }
 }

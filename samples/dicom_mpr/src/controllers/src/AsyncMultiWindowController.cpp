@@ -5,7 +5,6 @@
 #include <vtkCommand.h>
 #include <vtkGenericOpenGLRenderWindow.h>
 #include <vtkImageData.h>
-#include <vtkNew.h>
 #include <vtkResliceImageViewer.h>
 
 #include <QString>
@@ -19,7 +18,23 @@ namespace controllers {
 AsyncMultiWindowController::AsyncMultiWindowController(QObject* parent)
     : IAsyncViewController(parent) {}
 
-AsyncMultiWindowController::~AsyncMultiWindowController() = default;
+AsyncMultiWindowController::~AsyncMultiWindowController() {
+    // Remove each pane's StartEvent observer before m_paneContexts goes
+    // away. executeBlocking (not execute): this must not return until the
+    // observer is actually gone on that pane's worker thread, otherwise a
+    // render already queued there could still fire OnRenderStart() on a
+    // ctx that's about to be freed.
+    for (auto& ctx : m_paneContexts) {
+        if (!ctx || !ctx->view || !ctx->startCmd)
+            continue;
+
+        vtkSmartPointer<vtkCallbackCommand> startCmd = ctx->startCmd;
+        ctx->view->executeBlocking([startCmd](vtkGenericOpenGLRenderWindow* window) {
+            window->RemoveObserver(startCmd);
+        });
+    }
+    m_paneContexts.clear();
+}
 
 void AsyncMultiWindowController::OnRenderStart(vtkObject*, unsigned long, void* clientData, void*) {
     auto* ctx = static_cast<PaneRenderContext*>(clientData);
@@ -51,15 +66,24 @@ void AsyncMultiWindowController::_Initialize(const std::vector<AsyncRenderView*>
 
         auto ctx = std::make_unique<PaneRenderContext>();
         ctx->riv = riv;
+        ctx->view = view;
         PaneRenderContext* ctxPtr = ctx.get();
-        m_paneContexts.push_back(std::move(ctx));
 
-        view->executeBlocking([ctxPtr](vtkGenericOpenGLRenderWindow* window) {
-            vtkNew<vtkCallbackCommand> startCmd;
+        // Safe to capture &startCmd by reference: executeBlocking() does
+        // not return until this lambda has fully run, so startCmd (a local
+        // on this thread's stack) is still alive when it's assigned. The
+        // handle is kept in ctx->startCmd so ~AsyncMultiWindowController()
+        // can RemoveObserver() it later.
+        vtkSmartPointer<vtkCallbackCommand> startCmd;
+        view->executeBlocking([ctxPtr, &startCmd](vtkGenericOpenGLRenderWindow* window) {
+            startCmd = vtkSmartPointer<vtkCallbackCommand>::New();
             startCmd->SetClientData(ctxPtr);
             startCmd->SetCallback(&AsyncMultiWindowController::OnRenderStart);
             window->AddObserver(vtkCommand::StartEvent, startCmd);
         });
+        ctx->startCmd = startCmd;
+
+        m_paneContexts.push_back(std::move(ctx));
     }
 
     m_initialized = true;

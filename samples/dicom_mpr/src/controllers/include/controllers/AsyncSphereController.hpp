@@ -5,6 +5,7 @@
 
 #include <array>
 #include <atomic>
+#include <memory>
 #include <vector>
 
 #include "controllers/IControllerBase.hpp"
@@ -32,8 +33,15 @@ namespace controllers {
  * the shared object instead of trying to guard every VTK call path that
  * touches it.
  *
- * Position/radius/color are tracked as plain members (m_position/m_radius/
- * m_color), not read back from any VTK object.
+ * Position/radius are tracked in a shared, atomic-backed SphereState block
+ * (m_state) rather than plain members: SetPosition()/SetRadius() run on
+ * whichever thread calls them (a pane's own worker thread during a drag, or
+ * the GUI thread for slider/programmatic calls) while every pane's worker
+ * thread reads them back inside its dispatched lambda, so plain members
+ * would be subject to torn reads. The lambdas capture the shared_ptr<SphereState>
+ * by value (not `this`) so a still-queued lambda can't dereference a freed
+ * controller. Color is tracked as a plain member (m_color), not read back
+ * from any VTK object — lower risk, no pipeline Update() call involved.
  */
 class AsyncSphereController : public IControllerBase {
     Q_OBJECT
@@ -58,7 +66,7 @@ class AsyncSphereController : public IControllerBase {
     /** @brief Removes the actor from every pane's renderer and detaches all observers. */
     void Cleanup();
 
-    /** @brief Moves the sphere. Coalesces per pane (see m_positionUpdateInFlight). */
+    /** @brief Moves the sphere. Coalesces per pane (see SphereState::positionInFlight). */
     void SetPosition(const Vec3& pos);
     void SetRadius(double radius);
     void SetColor(const Vec3& rgb);
@@ -94,16 +102,33 @@ class AsyncSphereController : public IControllerBase {
 
     std::vector<PaneEntry> m_panes;
 
-    // current sphere state, no VTK object backs these
-    Vec3 m_position{0.0, 0.0, 0.0};
-    double m_radius{3.0};
-    Vec3 m_color{1.0, 0.3, 0.3};
+    // Shared, atomic-backed sphere position/radius + per-pane "dispatch
+    // in flight" flags. Held via shared_ptr and captured by value (never
+    // `this`) in SetPosition()/SetRadius()'s dispatched lambdas, so the
+    // block outlives the controller if a lambda is still queued on a
+    // worker thread when Cleanup()/~AsyncSphereController() run, and so
+    // every cross-thread read/write of position/radius is atomic (no torn
+    // reads of what used to be plain std::array<double,3>/double members).
+    //
+    // positionInFlight/radiusInFlight are indexed the same as m_panes.
+    // SetPosition/SetRadius skip dispatching to a pane that's still
+    // catching up, since the in-flight lambda re-reads x/y/z/radius
+    // anyway; the lambda itself re-checks after clearing its flag so a
+    // value written while it was running isn't silently dropped (see
+    // SetPosition/SetRadius).
+    struct SphereState {
+        std::atomic<double> x{0.0};
+        std::atomic<double> y{0.0};
+        std::atomic<double> z{0.0};
+        std::atomic<double> radius{3.0};
+        std::array<std::atomic<bool>, 3> positionInFlight{};
+        std::array<std::atomic<bool>, 3> radiusInFlight{};
+    };
+    std::shared_ptr<SphereState> m_state = std::make_shared<SphereState>();
 
-    // per-pane "dispatch already queued" flags, indexed same as m_panes;
-    // SetPosition/SetRadius skip dispatching to a pane that's still catching
-    // up, since the in-flight lambda re-reads m_position/m_radius anyway
-    std::array<std::atomic<bool>, 3> m_positionUpdateInFlight{};
-    std::array<std::atomic<bool>, 3> m_radiusUpdateInFlight{};
+    // no VTK object backs this; not atomic since SetColor() has no pipeline
+    // Update() call and isn't on a worker-thread-contended hot path
+    Vec3 m_color{1.0, 0.3, 0.3};
 
     bool m_isDragging{false};
     vtkRenderer* m_activeRenderer{nullptr};

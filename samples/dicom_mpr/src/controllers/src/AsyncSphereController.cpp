@@ -51,8 +51,12 @@ void AsyncSphereController::AddPane(AsyncRenderView* view, DragPlane plane) {
     vtkSmartPointer<vtkCallbackCommand> leftDown = m_leftDownCmd;
     vtkSmartPointer<vtkCallbackCommand> mouseMove = m_mouseMoveCmd;
     vtkSmartPointer<vtkCallbackCommand> leftUp = m_leftUpCmd;
-    const Vec3 position = m_position;
-    const double radius = m_radius;
+    const Vec3 position = {
+        m_state->x.load(std::memory_order_relaxed),
+        m_state->y.load(std::memory_order_relaxed),
+        m_state->z.load(std::memory_order_relaxed),
+    };
+    const double radius = m_state->radius.load(std::memory_order_relaxed);
     const Vec3 color = m_color;
 
     PaneEntry entry;
@@ -111,7 +115,11 @@ void AsyncSphereController::Cleanup() {
         if (!view)
             continue;
 
-        view->execute([renderer, actor, leftDown, mouseMove, leftUp](vtkGenericOpenGLRenderWindow* window) {
+        // executeBlocking (not execute): callers of Cleanup() (notably
+        // AsyncMultiWindowController::_RemoveSphere()) reset the controller
+        // right after this returns, so the actor/observer removal must have
+        // actually run on the worker thread before we get back to them.
+        view->executeBlocking([renderer, actor, leftDown, mouseMove, leftUp](vtkGenericOpenGLRenderWindow* window) {
             if (renderer && actor)
                 renderer->RemoveActor(actor);
             if (vtkRenderWindowInteractor* interactor = window->GetInteractor()) {
@@ -128,29 +136,52 @@ void AsyncSphereController::Cleanup() {
 }
 
 void AsyncSphereController::SetPosition(const Vec3& pos) {
-    m_position = pos;
+    m_state->x.store(pos[0], std::memory_order_relaxed);
+    m_state->y.store(pos[1], std::memory_order_relaxed);
+    m_state->z.store(pos[2], std::memory_order_relaxed);
 
-    for (size_t i = 0; i < m_panes.size() && i < m_positionUpdateInFlight.size(); ++i) {
+    for (size_t i = 0; i < m_panes.size() && i < m_state->positionInFlight.size(); ++i) {
         PaneEntry& pane = m_panes[i];
         if (!pane.view)
             continue;
 
-        // skip if a dispatch is already in flight for this pane, it'll pick up the latest m_position
-        if (m_positionUpdateInFlight[i].exchange(true, std::memory_order_acq_rel))
+        // skip if a dispatch is already in flight for this pane, it'll pick up the latest position
+        if (m_state->positionInFlight[i].exchange(true, std::memory_order_acq_rel))
             continue;
 
         vtkSmartPointer<vtkSphereSource> source = pane.source;
         vtkActor* actor = pane.actor;
-        std::atomic<bool>* inFlight = &m_positionUpdateInFlight[i];
-        pane.view->execute([this, source, actor, inFlight](vtkGenericOpenGLRenderWindow*) {
-            const Vec3 target = m_position;
-            if (source) {
-                source->SetCenter(target[0], target[1], target[2]);
-                source->Update();
+        std::shared_ptr<SphereState> state = m_state;  // not `this`: outlives the controller if still queued
+        const size_t idx = i;
+        pane.view->execute([state, source, actor, idx](vtkGenericOpenGLRenderWindow*) {
+            // Loop rather than apply-once: if a newer position was written
+            // (and its SetPosition() call saw positionInFlight still true,
+            // so it skipped dispatching, trusting us to pick it up) after we
+            // read `target` below but before we clear positionInFlight, that
+            // write would otherwise never get applied. Re-check after
+            // clearing the flag and, if the value moved on and nobody else
+            // has claimed the slot, apply the latest value too.
+            while (true) {
+                const double tx = state->x.load(std::memory_order_relaxed);
+                const double ty = state->y.load(std::memory_order_relaxed);
+                const double tz = state->z.load(std::memory_order_relaxed);
+                if (source) {
+                    source->SetCenter(tx, ty, tz);
+                    source->Update();
+                }
+                if (actor)
+                    actor->Modified();
+
+                state->positionInFlight[idx].store(false, std::memory_order_release);
+
+                const double cx = state->x.load(std::memory_order_relaxed);
+                const double cy = state->y.load(std::memory_order_relaxed);
+                const double cz = state->z.load(std::memory_order_relaxed);
+                if (cx == tx && cy == ty && cz == tz)
+                    break;  // nothing changed while we were applying it
+                if (state->positionInFlight[idx].exchange(true, std::memory_order_acq_rel))
+                    break;  // someone else already claimed it and will dispatch
             }
-            if (actor)
-                actor->Modified();
-            inFlight->store(false, std::memory_order_release);
         });
     }
 
@@ -158,28 +189,39 @@ void AsyncSphereController::SetPosition(const Vec3& pos) {
 }
 
 void AsyncSphereController::SetRadius(double radius) {
-    m_radius = radius;
+    m_state->radius.store(radius, std::memory_order_relaxed);
 
-    for (size_t i = 0; i < m_panes.size() && i < m_radiusUpdateInFlight.size(); ++i) {
+    for (size_t i = 0; i < m_panes.size() && i < m_state->radiusInFlight.size(); ++i) {
         PaneEntry& pane = m_panes[i];
         if (!pane.view)
             continue;
 
-        if (m_radiusUpdateInFlight[i].exchange(true, std::memory_order_acq_rel))
+        if (m_state->radiusInFlight[i].exchange(true, std::memory_order_acq_rel))
             continue;
 
         vtkSmartPointer<vtkSphereSource> source = pane.source;
         vtkActor* actor = pane.actor;
-        std::atomic<bool>* inFlight = &m_radiusUpdateInFlight[i];
-        pane.view->execute([this, source, actor, inFlight](vtkGenericOpenGLRenderWindow*) {
-            const double target = m_radius;
-            if (source) {
-                source->SetRadius(target);
-                source->Update();
+        std::shared_ptr<SphereState> state = m_state;  // not `this`: outlives the controller if still queued
+        const size_t idx = i;
+        pane.view->execute([state, source, actor, idx](vtkGenericOpenGLRenderWindow*) {
+            // See SetPosition()'s lambda for why this loops instead of
+            // applying once.
+            while (true) {
+                const double target = state->radius.load(std::memory_order_relaxed);
+                if (source) {
+                    source->SetRadius(target);
+                    source->Update();
+                }
+                if (actor)
+                    actor->Modified();
+
+                state->radiusInFlight[idx].store(false, std::memory_order_release);
+
+                if (state->radius.load(std::memory_order_relaxed) == target)
+                    break;
+                if (state->radiusInFlight[idx].exchange(true, std::memory_order_acq_rel))
+                    break;
             }
-            if (actor)
-                actor->Modified();
-            inFlight->store(false, std::memory_order_release);
         });
     }
 }
@@ -201,11 +243,15 @@ void AsyncSphereController::SetColor(const Vec3& rgb) {
 }
 
 double AsyncSphereController::GetRadius() const {
-    return m_radius;
+    return m_state->radius.load(std::memory_order_relaxed);
 }
 
 AsyncSphereController::Vec3 AsyncSphereController::GetPosition() const {
-    return m_position;
+    return {
+        m_state->x.load(std::memory_order_relaxed),
+        m_state->y.load(std::memory_order_relaxed),
+        m_state->z.load(std::memory_order_relaxed),
+    };
 }
 
 AsyncSphereController::Vec3 AsyncSphereController::GetColor() const {
@@ -290,7 +336,11 @@ void AsyncSphereController::OnMouseMove(vtkObject* caller, unsigned long, void* 
     const double rayNear[3] = {near4[0] / near4[3], near4[1] / near4[3], near4[2] / near4[3]};
     const double rayFar[3] = {far4[0] / far4[3], far4[1] / far4[3], far4[2] / far4[3]};
 
-    double center[3] = {self->m_position[0], self->m_position[1], self->m_position[2]};
+    double center[3] = {
+        self->m_state->x.load(std::memory_order_relaxed),
+        self->m_state->y.load(std::memory_order_relaxed),
+        self->m_state->z.load(std::memory_order_relaxed),
+    };
 
     double normal[3] = {0.0, 0.0, 0.0};
     switch (self->m_activePlane) {
