@@ -19,6 +19,12 @@ AsyncMultiWindowController::AsyncMultiWindowController(QObject* parent)
     : IAsyncViewController(parent) {}
 
 AsyncMultiWindowController::~AsyncMultiWindowController() {
+    // same reasoning as the StartEvent cleanup below: drop the sphere's
+    // interactor observers (and actor) while the views are still alive,
+    // before m_sphereController itself is freed
+    if (m_sphereController)
+        m_sphereController->Cleanup();
+
     // Remove each pane's StartEvent observer before m_paneContexts goes
     // away. executeBlocking (not execute): this must not return until the
     // observer is actually gone on that pane's worker thread, otherwise a
