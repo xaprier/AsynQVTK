@@ -1,6 +1,5 @@
 #include "controllers/AsyncSphereController.hpp"
 
-#include <AsynQVTK/AsyncRenderView.hpp>
 #include <vtkActor.h>
 #include <vtkCallbackCommand.h>
 #include <vtkCellPicker.h>
@@ -11,24 +10,17 @@
 #include <vtkPolyDataMapper.h>
 #include <vtkProperty.h>
 #include <vtkRenderWindowInteractor.h>
-#include <vtkRendererCollection.h>
 #include <vtkRenderer.h>
+#include <vtkRendererCollection.h>
 #include <vtkSphereSource.h>
 
-#include <QMutex>
-#include <QMutexLocker>
-
+#include <AsynQVTK/AsyncRenderView.hpp>
 #include <algorithm>
 
 namespace controllers {
 
 AsyncSphereController::AsyncSphereController(QObject* parent)
     : IControllerBase(parent) {
-    m_sphereSource = vtkSmartPointer<vtkSphereSource>::New();
-    m_sphereSource->SetThetaResolution(16);
-    m_sphereSource->SetPhiResolution(16);
-    m_sphereSource->SetRadius(3.0);
-
     m_picker = vtkSmartPointer<vtkCellPicker>::New();
     m_picker->SetTolerance(0.005);
 
@@ -47,10 +39,6 @@ AsyncSphereController::AsyncSphereController(QObject* parent)
 
 AsyncSphereController::~AsyncSphereController() = default;
 
-void AsyncSphereController::SetMutex(QMutex* mutex) {
-    m_mutex = mutex;
-}
-
 void AsyncSphereController::AddPane(AsyncRenderView* view, DragPlane plane) {
     if (!view)
         return;
@@ -60,10 +48,12 @@ void AsyncSphereController::AddPane(AsyncRenderView* view, DragPlane plane) {
             return;
     }
 
-    vtkSmartPointer<vtkSphereSource> source = m_sphereSource;
     vtkSmartPointer<vtkCallbackCommand> leftDown = m_leftDownCmd;
     vtkSmartPointer<vtkCallbackCommand> mouseMove = m_mouseMoveCmd;
     vtkSmartPointer<vtkCallbackCommand> leftUp = m_leftUpCmd;
+    const Vec3 position = m_position;
+    const double radius = m_radius;
+    const Vec3 color = m_color;
 
     PaneEntry entry;
     entry.view = view;
@@ -72,23 +62,31 @@ void AsyncSphereController::AddPane(AsyncRenderView* view, DragPlane plane) {
     // Safe to capture &entry by reference: executeBlocking() does not return
     // until this lambda has fully run on the pane's worker thread, so entry
     // (a local on this thread's stack) is still alive when it's written.
-    view->executeBlocking([&entry, source, leftDown, mouseMove, leftUp](vtkGenericOpenGLRenderWindow* window) {
+    view->executeBlocking([&entry, leftDown, mouseMove, leftUp, position, radius, color](vtkGenericOpenGLRenderWindow* window) {
         vtkRenderer* renderer = window->GetRenderers()->GetFirstRenderer();
         if (!renderer)
             return;
+
+        // this pane's own source, never shared across panes
+        vtkNew<vtkSphereSource> source;
+        source->SetThetaResolution(16);
+        source->SetPhiResolution(16);
+        source->SetCenter(position[0], position[1], position[2]);
+        source->SetRadius(radius);
 
         vtkNew<vtkPolyDataMapper> mapper;
         mapper->SetInputConnection(source->GetOutputPort());
 
         vtkNew<vtkActor> actor;
         actor->SetMapper(mapper);
-        actor->GetProperty()->SetColor(1.0, 0.3, 0.3);
+        actor->GetProperty()->SetColor(color[0], color[1], color[2]);
         actor->GetProperty()->SetOpacity(0.85);
 
         renderer->AddActor(actor);
 
         entry.renderer = renderer;
         entry.actor = actor;  // kept alive by the renderer's own reference to it
+        entry.source = source;
 
         if (vtkRenderWindowInteractor* interactor = window->GetInteractor()) {
             // Priority 3.0 — sphere events run before the RIV/viewport style (lower priority).
@@ -130,22 +128,29 @@ void AsyncSphereController::Cleanup() {
 }
 
 void AsyncSphereController::SetPosition(const Vec3& pos) {
-    if (m_mutex) {
-        QMutexLocker lock(m_mutex);
-        m_sphereSource->SetCenter(pos[0], pos[1], pos[2]);
-        m_sphereSource->Update();
-    } else {
-        m_sphereSource->SetCenter(pos[0], pos[1], pos[2]);
-        m_sphereSource->Update();
-    }
+    m_position = pos;
 
-    for (auto& pane : m_panes) {
-        vtkActor* actor = pane.actor;
+    for (size_t i = 0; i < m_panes.size() && i < m_positionUpdateInFlight.size(); ++i) {
+        PaneEntry& pane = m_panes[i];
         if (!pane.view)
             continue;
-        pane.view->execute([actor](vtkGenericOpenGLRenderWindow*) {
+
+        // skip if a dispatch is already in flight for this pane, it'll pick up the latest m_position
+        if (m_positionUpdateInFlight[i].exchange(true, std::memory_order_acq_rel))
+            continue;
+
+        vtkSmartPointer<vtkSphereSource> source = pane.source;
+        vtkActor* actor = pane.actor;
+        std::atomic<bool>* inFlight = &m_positionUpdateInFlight[i];
+        pane.view->execute([this, source, actor, inFlight](vtkGenericOpenGLRenderWindow*) {
+            const Vec3 target = m_position;
+            if (source) {
+                source->SetCenter(target[0], target[1], target[2]);
+                source->Update();
+            }
             if (actor)
                 actor->Modified();
+            inFlight->store(false, std::memory_order_release);
         });
     }
 
@@ -153,27 +158,35 @@ void AsyncSphereController::SetPosition(const Vec3& pos) {
 }
 
 void AsyncSphereController::SetRadius(double radius) {
-    if (m_mutex) {
-        QMutexLocker lock(m_mutex);
-        m_sphereSource->SetRadius(radius);
-        m_sphereSource->Update();
-    } else {
-        m_sphereSource->SetRadius(radius);
-        m_sphereSource->Update();
-    }
+    m_radius = radius;
 
-    for (auto& pane : m_panes) {
-        vtkActor* actor = pane.actor;
+    for (size_t i = 0; i < m_panes.size() && i < m_radiusUpdateInFlight.size(); ++i) {
+        PaneEntry& pane = m_panes[i];
         if (!pane.view)
             continue;
-        pane.view->execute([actor](vtkGenericOpenGLRenderWindow*) {
+
+        if (m_radiusUpdateInFlight[i].exchange(true, std::memory_order_acq_rel))
+            continue;
+
+        vtkSmartPointer<vtkSphereSource> source = pane.source;
+        vtkActor* actor = pane.actor;
+        std::atomic<bool>* inFlight = &m_radiusUpdateInFlight[i];
+        pane.view->execute([this, source, actor, inFlight](vtkGenericOpenGLRenderWindow*) {
+            const double target = m_radius;
+            if (source) {
+                source->SetRadius(target);
+                source->Update();
+            }
             if (actor)
                 actor->Modified();
+            inFlight->store(false, std::memory_order_release);
         });
     }
 }
 
 void AsyncSphereController::SetColor(const Vec3& rgb) {
+    m_color = rgb;
+
     for (auto& pane : m_panes) {
         vtkActor* actor = pane.actor;
         if (!pane.view)
@@ -188,31 +201,15 @@ void AsyncSphereController::SetColor(const Vec3& rgb) {
 }
 
 double AsyncSphereController::GetRadius() const {
-    if (m_mutex) {
-        QMutexLocker lock(m_mutex);
-        return m_sphereSource->GetRadius();
-    }
-    return m_sphereSource->GetRadius();
+    return m_radius;
 }
 
 AsyncSphereController::Vec3 AsyncSphereController::GetPosition() const {
-    double c[3];
-    if (m_mutex) {
-        QMutexLocker lock(m_mutex);
-        m_sphereSource->GetCenter(c);
-    } else {
-        m_sphereSource->GetCenter(c);
-    }
-    return {c[0], c[1], c[2]};
+    return m_position;
 }
 
-// Reads a pane-owned actor's property; acceptable relaxation (simple scalar
-// read, not a mutation) — same tradeoff as CornerAnnotationOverlay (Task 2).
 AsyncSphereController::Vec3 AsyncSphereController::GetColor() const {
-    double rgb[3] = {1.0, 0.3, 0.3};
-    if (!m_panes.empty() && m_panes.front().actor)
-        m_panes.front().actor->GetProperty()->GetColor(rgb);
-    return {rgb[0], rgb[1], rgb[2]};
+    return m_color;
 }
 
 bool AsyncSphereController::IsDragging() const {
@@ -251,15 +248,8 @@ void AsyncSphereController::OnLeftButtonDown(vtkObject* caller, unsigned long, v
     if (!renderer)
         return;
 
-    vtkActor* pickedActor = nullptr;
-    if (self->m_mutex) {
-        QMutexLocker lock(self->m_mutex);
-        self->m_picker->Pick(pos[0], pos[1], 0.0, renderer);
-        pickedActor = self->m_picker->GetActor();
-    } else {
-        self->m_picker->Pick(pos[0], pos[1], 0.0, renderer);
-        pickedActor = self->m_picker->GetActor();
-    }
+    self->m_picker->Pick(pos[0], pos[1], 0.0, renderer);
+    vtkActor* pickedActor = self->m_picker->GetActor();
 
     auto* expectedActor = self->ActorFor(renderer);
     if (pickedActor != expectedActor)
@@ -300,13 +290,7 @@ void AsyncSphereController::OnMouseMove(vtkObject* caller, unsigned long, void* 
     const double rayNear[3] = {near4[0] / near4[3], near4[1] / near4[3], near4[2] / near4[3]};
     const double rayFar[3] = {far4[0] / far4[3], far4[1] / far4[3], far4[2] / far4[3]};
 
-    double center[3];
-    if (self->m_mutex) {
-        QMutexLocker lock(self->m_mutex);
-        self->m_sphereSource->GetCenter(center);
-    } else {
-        self->m_sphereSource->GetCenter(center);
-    }
+    double center[3] = {self->m_position[0], self->m_position[1], self->m_position[2]};
 
     double normal[3] = {0.0, 0.0, 0.0};
     switch (self->m_activePlane) {

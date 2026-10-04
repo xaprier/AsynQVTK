@@ -4,6 +4,7 @@
 #include <vtkSmartPointer.h>
 
 #include <array>
+#include <atomic>
 #include <vector>
 
 #include "controllers/IControllerBase.hpp"
@@ -54,7 +55,7 @@ class AsyncSliceController : public IControllerBase {
     void FitToView();
 
   public slots:
-    /** @brief Scrolls each slice plane to the position nearest to @p worldPos. */
+    /** @brief Scrolls each slice plane to the position nearest to @p worldPos. Coalesces per pane. */
     void OnSphereUpdated(const Vec3& worldPos);
 
   private:
@@ -65,6 +66,10 @@ class AsyncSliceController : public IControllerBase {
     vtkSmartPointer<AsyncResliceImageViewerInteractorStyle> m_rivStyle;
     std::vector<vtkSmartPointer<vtkResliceImageViewer>> m_rivs;
     std::vector<AsyncRenderView*> m_views;
+
+    // per-pane "dispatch in flight" state for OnSphereUpdated, indexed 0/1/2 = axial/coronal/sagittal
+    std::array<std::atomic<int>, 3> m_pendingSlice{};
+    std::array<std::atomic<bool>, 3> m_sliceUpdateInFlight{};
 };
 
 }  // namespace controllers

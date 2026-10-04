@@ -1,6 +1,5 @@
 #include "controllers/AsyncSliceController.hpp"
 
-#include <AsynQVTK/AsyncRenderView.hpp>
 #include <vtkCamera.h>
 #include <vtkCommand.h>
 #include <vtkGenericOpenGLRenderWindow.h>
@@ -14,6 +13,7 @@
 #include <vtkResliceCursorWidget.h>
 #include <vtkResliceImageViewer.h>
 
+#include <AsynQVTK/AsyncRenderView.hpp>
 #include <algorithm>
 
 #include "controllers/AsyncResliceImageViewerInteractorStyle.hpp"
@@ -232,14 +232,24 @@ void AsyncSliceController::OnSphereUpdated(const Vec3& worldPos) {
             continue;
 
         vtkResliceImageViewer* riv = m_rivs[static_cast<size_t>(i)];
-        const double worldPosAx = worldPos[ax];
-        const double originAx = origin[ax];
-        const double spacingAx = spacing[ax];
+        const size_t pi = static_cast<size_t>(i);
 
-        m_views[static_cast<size_t>(i)]->execute([riv, worldPosAx, originAx, spacingAx](vtkGenericOpenGLRenderWindow*) {
-            const int sliceIdx = static_cast<int>((worldPosAx - originAx) / spacingAx + 0.5);
-            const int clamped = std::max(riv->GetSliceMin(), std::min(riv->GetSliceMax(), sliceIdx));
-            riv->SetSlice(clamped);
+        const int sliceIdx = static_cast<int>((worldPos[ax] - origin[ax]) / spacing[ax] + 0.5);
+        const int clamped = std::max(riv->GetSliceMin(), std::min(riv->GetSliceMax(), sliceIdx));
+
+        m_pendingSlice[pi].store(clamped, std::memory_order_relaxed);
+
+        // skip if a dispatch is already in flight for this pane, it'll pick up the latest m_pendingSlice
+        if (m_sliceUpdateInFlight[pi].exchange(true, std::memory_order_acq_rel))
+            continue;
+
+        std::atomic<int>* pending = &m_pendingSlice[pi];
+        std::atomic<bool>* inFlight = &m_sliceUpdateInFlight[pi];
+        m_views[pi]->execute([riv, pending, inFlight](vtkGenericOpenGLRenderWindow*) {
+            const int target = pending->load(std::memory_order_relaxed);
+            if (riv->GetSlice() != target)
+                riv->SetSlice(target);
+            inFlight->store(false, std::memory_order_release);
         });
     }
 }

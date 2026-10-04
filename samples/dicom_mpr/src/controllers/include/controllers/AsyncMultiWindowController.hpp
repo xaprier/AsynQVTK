@@ -4,8 +4,6 @@
 #include <memory>
 #include <vector>
 
-#include <QMutex>
-
 #include "controllers/IAsyncViewController.hpp"
 
 class vtkObject;
@@ -41,24 +39,15 @@ class AsyncMultiWindowController : public IAsyncViewController {
     void _SetImageData(vtkImageData* imageData) override;
     void _SetupPipeline(vtkImageData* imageData) override;
 
-    // Per-pane context handed to the StartEvent/EndEvent vtkCallbackCommand
-    // pair via SetClientData() — vtkCallbackCommand only carries one void*,
-    // so this bundles the mutex and that pane's RIV together. Kept alive in
-    // m_paneContexts for the controller's lifetime (the observers reference
-    // it indefinitely; vtkCallbackCommand's own lifetime is kept by the
-    // render window's observer list, but the void* payload it points to is
-    // not — see AddObserver/vtkCallbackCommand docs).
+    // per-pane context for the StartEvent callback, kept alive in m_paneContexts
     struct PaneRenderContext {
-        QMutex* mutex{nullptr};
         vtkResliceImageViewer* riv{nullptr};
     };
     static void OnRenderStart(vtkObject* caller, unsigned long eventId, void* clientData, void* callData);
-    static void OnRenderEnd(vtkObject* caller, unsigned long eventId, void* clientData, void* callData);
 
     std::unique_ptr<AsyncSliceController> m_sliceController;
     std::unique_ptr<AsyncSphereController> m_sphereController;
     std::vector<std::unique_ptr<PaneRenderContext>> m_paneContexts;
-    QMutex m_sphereMutex;
 };
 
 }  // namespace controllers

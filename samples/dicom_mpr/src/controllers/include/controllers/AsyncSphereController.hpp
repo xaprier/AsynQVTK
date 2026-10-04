@@ -4,11 +4,11 @@
 #include <vtkSmartPointer.h>
 
 #include <array>
+#include <atomic>
 #include <vector>
 
 #include "controllers/IControllerBase.hpp"
 
-class QMutex;
 class AsyncRenderView;
 class vtkActor;
 class vtkCallbackCommand;
@@ -24,26 +24,16 @@ namespace controllers {
  *        SphereController, adapted so every VTK mutation runs on the owning
  *        pane's AsyncRenderView worker thread instead of directly.
  *
- * Usage:
- *   1. SetMutex(mutex)        — once, before AddPane(); non-owning, must
- *                                outlive this object (owned by the parent
- *                                AsyncMultiWindowController, shared with its
- *                                per-pane StartEvent/EndEvent render lock).
- *   2. AddPane(view, plane)   — once per pane. Builds this pane's actor
- *                                (sharing the controller's single
- *                                vtkSphereSource) inside view->executeBlocking(),
- *                                adds it to the pane's own renderer, and
- *                                attaches the drag observers to the pane's
- *                                own interactor.
- *   3. SetPosition / SetRadius / SetColor as needed.
- *   4. Cleanup() before removing the sphere from the scene.
+ * Each pane owns its own vtkSphereSource/vtkPolyDataMapper/vtkActor —
+ * nothing VTK-side is shared across panes' worker threads. A single shared
+ * vtkSphereSource + mutex raced: riv->SetSlice() pulls actor bounds
+ * (ResetCameraClippingRange) without taking the mutex, so it could read the
+ * source mid-mutation from another pane's thread. Per-pane sources remove
+ * the shared object instead of trying to guard every VTK call path that
+ * touches it.
  *
- * Mouse-drag callbacks (OnLeftButtonDown/Move/Up) are unchanged in spirit
- * from the original: they already run correctly on the owning pane's worker
- * thread, because they fire from inside that pane's
- * AsyncRenderWorker::processEvent() dispatch. Only SetPosition/SetRadius
- * (which mutate the one shared vtkSphereSource) take the mutex and dispatch
- * a redraw to every pane via execute().
+ * Position/radius/color are tracked as plain members (m_position/m_radius/
+ * m_color), not read back from any VTK object.
  */
 class AsyncSphereController : public IControllerBase {
     Q_OBJECT
@@ -58,14 +48,6 @@ class AsyncSphereController : public IControllerBase {
     ~AsyncSphereController() override;
 
     /**
-     * @brief Set the mutex that guards the shared vtkSphereSource.
-     *
-     * Non-owning — lifetime must exceed this object. Call once, before any
-     * AddPane() or drag interaction.
-     */
-    void SetMutex(QMutex* mutex);
-
-    /**
      * @brief Registers one pane: builds its sphere actor/mapper and attaches
      *        the drag observers to its interactor. Call once per pane, after
      *        that pane's vtkResliceImageViewer (and therefore its renderer)
@@ -76,6 +58,7 @@ class AsyncSphereController : public IControllerBase {
     /** @brief Removes the actor from every pane's renderer and detaches all observers. */
     void Cleanup();
 
+    /** @brief Moves the sphere. Coalesces per pane (see m_positionUpdateInFlight). */
     void SetPosition(const Vec3& pos);
     void SetRadius(double radius);
     void SetColor(const Vec3& rgb);
@@ -94,6 +77,7 @@ class AsyncSphereController : public IControllerBase {
         AsyncRenderView* view{nullptr};
         vtkRenderer* renderer{nullptr};  // pane-owned; kept alive by the renderer's own actor reference
         vtkActor* actor{nullptr};        // pane-owned; same
+        vtkSmartPointer<vtkSphereSource> source;  // pane-owned; this pane's own copy, never shared
         DragPlane plane{DragPlane::Axial};
     };
 
@@ -103,14 +87,23 @@ class AsyncSphereController : public IControllerBase {
     static void OnMouseMove(vtkObject*, unsigned long, void* clientData, void*);
     static void OnLeftButtonUp(vtkObject*, unsigned long, void* clientData, void*);
 
-    vtkSmartPointer<vtkSphereSource> m_sphereSource;
     vtkSmartPointer<vtkCellPicker> m_picker;
     vtkSmartPointer<vtkCallbackCommand> m_leftDownCmd;
     vtkSmartPointer<vtkCallbackCommand> m_mouseMoveCmd;
     vtkSmartPointer<vtkCallbackCommand> m_leftUpCmd;
 
     std::vector<PaneEntry> m_panes;
-    QMutex* m_mutex{nullptr};  // non-owning, owned by the parent AsyncMultiWindowController
+
+    // current sphere state, no VTK object backs these
+    Vec3 m_position{0.0, 0.0, 0.0};
+    double m_radius{3.0};
+    Vec3 m_color{1.0, 0.3, 0.3};
+
+    // per-pane "dispatch already queued" flags, indexed same as m_panes;
+    // SetPosition/SetRadius skip dispatching to a pane that's still catching
+    // up, since the in-flight lambda re-reads m_position/m_radius anyway
+    std::array<std::atomic<bool>, 3> m_positionUpdateInFlight{};
+    std::array<std::atomic<bool>, 3> m_radiusUpdateInFlight{};
 
     bool m_isDragging{false};
     vtkRenderer* m_activeRenderer{nullptr};

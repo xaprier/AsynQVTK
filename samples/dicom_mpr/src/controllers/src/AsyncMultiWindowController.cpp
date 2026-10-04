@@ -23,14 +23,8 @@ AsyncMultiWindowController::~AsyncMultiWindowController() = default;
 
 void AsyncMultiWindowController::OnRenderStart(vtkObject*, unsigned long, void* clientData, void*) {
     auto* ctx = static_cast<PaneRenderContext*>(clientData);
-    ctx->mutex->lock();
     if (ctx->riv)
         ctx->riv->Render();
-}
-
-void AsyncMultiWindowController::OnRenderEnd(vtkObject*, unsigned long, void* clientData, void*) {
-    auto* ctx = static_cast<PaneRenderContext*>(clientData);
-    ctx->mutex->unlock();
 }
 
 void AsyncMultiWindowController::_Initialize(const std::vector<AsyncRenderView*>& views) {
@@ -47,14 +41,7 @@ void AsyncMultiWindowController::_Initialize(const std::vector<AsyncRenderView*>
     m_sliceController = std::make_unique<AsyncSliceController>(this);
     m_sliceController->Initialize(m_views);
 
-    // Per-pane StartEvent/EndEvent observer pair, replacing
-    // render::RenderScheduler's RivRenderTarget ordering: StartEvent locks
-    // the shared sphere mutex and runs this pane's riv->Render() before the
-    // window renders; EndEvent unlocks. Installed unconditionally here,
-    // before any sphere exists, because RIV render ordering is always
-    // needed regardless of whether a sphere has been added — an uncontended
-    // QMutex lock/unlock costs a few tens of nanoseconds, negligible next
-    // to a render call.
+    // StartEvent observer runs riv->Render() before the window renders, replacing RenderScheduler's ordering
     const auto& rivs = m_sliceController->GetViewers();
     for (size_t i = 0; i < m_views.size() && i < rivs.size(); ++i) {
         AsyncRenderView* view = m_views[i];
@@ -63,7 +50,6 @@ void AsyncMultiWindowController::_Initialize(const std::vector<AsyncRenderView*>
             continue;
 
         auto ctx = std::make_unique<PaneRenderContext>();
-        ctx->mutex = &m_sphereMutex;
         ctx->riv = riv;
         PaneRenderContext* ctxPtr = ctx.get();
         m_paneContexts.push_back(std::move(ctx));
@@ -73,11 +59,6 @@ void AsyncMultiWindowController::_Initialize(const std::vector<AsyncRenderView*>
             startCmd->SetClientData(ctxPtr);
             startCmd->SetCallback(&AsyncMultiWindowController::OnRenderStart);
             window->AddObserver(vtkCommand::StartEvent, startCmd);
-
-            vtkNew<vtkCallbackCommand> endCmd;
-            endCmd->SetClientData(ctxPtr);
-            endCmd->SetCallback(&AsyncMultiWindowController::OnRenderEnd);
-            window->AddObserver(vtkCommand::EndEvent, endCmd);
         });
     }
 
@@ -108,7 +89,6 @@ void AsyncMultiWindowController::_AddSphere() {
     };
 
     m_sphereController = std::make_unique<AsyncSphereController>();
-    m_sphereController->SetMutex(&m_sphereMutex);
 
     for (size_t i = 0; i < m_views.size() && i < 3; ++i) {
         if (m_views[i])
