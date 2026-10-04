@@ -75,19 +75,14 @@ void AsyncMultiWindowController::_Initialize(const std::vector<AsyncRenderView*>
         ctx->view = view;
         PaneRenderContext* ctxPtr = ctx.get();
 
-        // Safe to capture &startCmd by reference: executeBlocking() does
-        // not return until this lambda has fully run, so startCmd (a local
-        // on this thread's stack) is still alive when it's assigned. The
-        // handle is kept in ctx->startCmd so ~AsyncMultiWindowController()
-        // can RemoveObserver() it later.
-        vtkSmartPointer<vtkCallbackCommand> startCmd;
-        view->executeBlocking([ctxPtr, &startCmd](vtkGenericOpenGLRenderWindow* window) {
-            startCmd = vtkSmartPointer<vtkCallbackCommand>::New();
+        // write startCmd through ctxPtr (heap), not a GUI-thread stack local
+        view->executeBlocking([ctxPtr](vtkGenericOpenGLRenderWindow* window) {
+            vtkSmartPointer<vtkCallbackCommand> startCmd = vtkSmartPointer<vtkCallbackCommand>::New();
             startCmd->SetClientData(ctxPtr);
             startCmd->SetCallback(&AsyncMultiWindowController::OnRenderStart);
             window->AddObserver(vtkCommand::StartEvent, startCmd);
+            ctxPtr->startCmd = startCmd;
         });
-        ctx->startCmd = startCmd;
 
         m_paneContexts.push_back(std::move(ctx));
     }
