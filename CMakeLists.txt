@@ -2,6 +2,8 @@ cmake_minimum_required(VERSION 3.5...3.10)
 
 project(AsynQVTK)
 
+set(BUILD_SAMPLES OFF CACHE STRING "Sample executables will be build if you set ON")
+
 set(CMAKE_THREAD_LIBS_INIT "-lpthread")
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -pthread -Ofast")
 set(CMAKE_EXPORT_COMPILE_COMMANDS 1)
@@ -14,6 +16,9 @@ set(CMAKE_INCLUDE_CURRENT_DIR ON)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-add_subdirectory(library)
-add_subdirectory(samples/sphere_grid)
-add_subdirectory(samples/dicom_mpr)
+add_subdirectory(lib)
+
+if(BUILD_SAMPLES)
+    add_subdirectory(samples/sphere_grid)
+    add_subdirectory(samples/dicom_mpr)
+endif()
