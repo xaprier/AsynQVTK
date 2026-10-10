@@ -5,8 +5,10 @@
 #include <vtkGenericOpenGLRenderWindow.h>
 #include <vtkImageActor.h>
 #include <vtkImageData.h>
+#include <vtkImagePermute.h>
 #include <vtkImageProperty.h>
 #include <vtkImageViewer2.h>
+#include <vtkNew.h>
 #include <vtkRenderWindow.h>
 #include <vtkRenderWindowInteractor.h>
 #include <vtkRenderer.h>
@@ -31,10 +33,14 @@ void AsyncSliceController::Initialize(const std::vector<AsyncRenderView*>& views
 }
 
 void AsyncSliceController::SetupViewers() {
+    // Pane 2 (sagittal) is set to XY, not YZ: it's fed m_sagittalImage (X
+    // and Z axes permuted, see SetImageData), where stepping through
+    // original-X positions is this copy's own Z axis. See m_sagittalImage's
+    // doc comment for why.
     static constexpr int kOrientations[3] = {
         vtkImageViewer2::SLICE_ORIENTATION_XY,
         vtkImageViewer2::SLICE_ORIENTATION_XZ,
-        vtkImageViewer2::SLICE_ORIENTATION_YZ,
+        vtkImageViewer2::SLICE_ORIENTATION_XY,
     };
 
     m_rivs.clear();
@@ -86,6 +92,15 @@ void AsyncSliceController::SetImageData(vtkImageData* image) {
     m_image = vtkSmartPointer<vtkImageData>::New();
     m_image->ShallowCopy(image);
 
+    // (newX, newY, newZ) = (origY, origZ, origX): puts original X on the
+    // permuted copy's slowest-varying axis, matching XY's contiguous case.
+    vtkNew<vtkImagePermute> permute;
+    permute->SetInputData(m_image);
+    permute->SetFilteredAxes(1, 2, 0);
+    permute->Update();
+    m_sagittalImage = vtkSmartPointer<vtkImageData>::New();
+    m_sagittalImage->ShallowCopy(permute->GetOutput());
+
     SetupPipeline();
 }
 
@@ -93,10 +108,12 @@ void AsyncSliceController::SetupPipeline() {
     if (!m_image)
         return;
 
+    // Pane 2 (sagittal) uses XY against m_sagittalImage, not YZ against
+    // m_image: see m_sagittalImage's doc comment and SetupViewers().
     static constexpr int kOrientations[3] = {
         vtkImageViewer2::SLICE_ORIENTATION_XY,
         vtkImageViewer2::SLICE_ORIENTATION_XZ,
-        vtkImageViewer2::SLICE_ORIENTATION_YZ,
+        vtkImageViewer2::SLICE_ORIENTATION_XY,
     };
     static constexpr int kSliceAxis[3] = {2, 1, 0};
 
@@ -118,7 +135,7 @@ void AsyncSliceController::SetupPipeline() {
             continue;
 
         vtkResliceImageViewer* riv = m_rivs[i];
-        vtkImageData* image = m_image;
+        vtkImageData* image = (i == 2) ? m_sagittalImage.GetPointer() : m_image.GetPointer();
         const int orientation = kOrientations[i];
         const int ax = kSliceAxis[i];
         const double originAx = origin[ax];

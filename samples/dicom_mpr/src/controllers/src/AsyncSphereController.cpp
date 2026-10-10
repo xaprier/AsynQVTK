@@ -58,6 +58,24 @@ void AsyncSphereController::AddPane(AsyncRenderView* view, DragPlane plane) {
     };
     const double radius = m_state->radius.load(std::memory_order_relaxed);
     const Vec3 color = m_color;
+    // Pane 2 (sagittal) renders against AsyncSliceController::m_sagittalImage,
+    // an (origY, origZ, origX)-axis-permuted copy of the volume (see that
+    // member's doc comment) kept there purely so the cheap vtkImageActor
+    // texture path applies to the sagittal pane too. vtkImageActor positions
+    // itself using the loaded data's own Origin/Spacing, which are always
+    // read as literal world X/Y/Z — so pane 2's renderer has its world axes
+    // silently relabeled (world-X slot now holds origY, etc.) relative to
+    // the other two panes and to this sphere's real (x,y,z) state. The
+    // sphere actor is a genuine world-space object sharing that renderer, so
+    // its displayed center must be permuted the same way for this one pane,
+    // or it drifts from the image (e.g. moving the sphere along real Y
+    // appears as vertical motion in sagittal instead of horizontal).
+    // NOTE: any other world-space actor added to pane 2's renderer in the
+    // future needs this same (y, z, x) permutation — nothing enforces it.
+    const size_t paneIndex = m_panes.size();
+    const Vec3 displayPosition = (paneIndex == 2)
+        ? Vec3{position[1], position[2], position[0]}
+        : position;
 
     PaneEntry entry;
     entry.view = view;
@@ -66,7 +84,7 @@ void AsyncSphereController::AddPane(AsyncRenderView* view, DragPlane plane) {
     // Safe to capture &entry by reference: executeBlocking() does not return
     // until this lambda has fully run on the pane's worker thread, so entry
     // (a local on this thread's stack) is still alive when it's written.
-    view->executeBlocking([&entry, leftDown, mouseMove, leftUp, position, radius, color](vtkGenericOpenGLRenderWindow* window) {
+    view->executeBlocking([&entry, leftDown, mouseMove, leftUp, displayPosition, radius, color](vtkGenericOpenGLRenderWindow* window) {
         vtkRenderer* renderer = window->GetRenderers()->GetFirstRenderer();
         if (!renderer)
             return;
@@ -75,7 +93,7 @@ void AsyncSphereController::AddPane(AsyncRenderView* view, DragPlane plane) {
         vtkNew<vtkSphereSource> source;
         source->SetThetaResolution(16);
         source->SetPhiResolution(16);
-        source->SetCenter(position[0], position[1], position[2]);
+        source->SetCenter(displayPosition[0], displayPosition[1], displayPosition[2]);
         source->SetRadius(radius);
 
         vtkNew<vtkPolyDataMapper> mapper;
@@ -166,7 +184,13 @@ void AsyncSphereController::SetPosition(const Vec3& pos) {
                 const double ty = state->y.load(std::memory_order_relaxed);
                 const double tz = state->z.load(std::memory_order_relaxed);
                 if (source) {
-                    source->SetCenter(tx, ty, tz);
+                    // pane 2 (sagittal) is permuted (y, z, x) to match
+                    // AsyncSliceController::m_sagittalImage's relabeled world
+                    // axes - see the doc comment in AddPane().
+                    if (idx == 2)
+                        source->SetCenter(ty, tz, tx);
+                    else
+                        source->SetCenter(tx, ty, tz);
                     source->Update();
                 }
                 if (actor)
@@ -333,8 +357,24 @@ void AsyncSphereController::OnMouseMove(vtkObject* caller, unsigned long, void* 
     if (near4[3] == 0.0 || far4[3] == 0.0)
         return;
 
-    const double rayNear[3] = {near4[0] / near4[3], near4[1] / near4[3], near4[2] / near4[3]};
-    const double rayFar[3] = {far4[0] / far4[3], far4[1] / far4[3], far4[2] / far4[3]};
+    double rayNear[3] = {near4[0] / near4[3], near4[1] / near4[3], near4[2] / near4[3]};
+    double rayFar[3] = {far4[0] / far4[3], far4[1] / far4[3], far4[2] / far4[3]};
+
+    // Pane 2 (sagittal)'s renderer lives in the (origY, origZ, origX)-permuted
+    // world described in AddPane()'s doc comment, so DisplayToWorld() above
+    // returned a point in THAT frame. Invert the permutation here before
+    // intersecting against the real-world plane below (new=(Y,Z,X) => real
+    // (X,Y,Z) = (new.z, new.x, new.y)).
+    if (self->m_activePlane == DragPlane::Sagittal) {
+        auto toRealWorld = [](double p[3]) {
+            const double a = p[0], b = p[1], c = p[2];
+            p[0] = c;
+            p[1] = a;
+            p[2] = b;
+        };
+        toRealWorld(rayNear);
+        toRealWorld(rayFar);
+    }
 
     double center[3] = {
         self->m_state->x.load(std::memory_order_relaxed),

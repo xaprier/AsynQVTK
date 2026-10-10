@@ -63,6 +63,14 @@ class AsyncSliceController : public IControllerBase {
     void SetupPipeline();
 
     vtkSmartPointer<vtkImageData> m_image;
+    // Sagittal (pane 2) is fed this axis-permuted copy of m_image instead of
+    // m_image itself: vtkImageMapper3D's texture-extraction fast path only
+    // triggers when the slice-fixed axis is the volume's slowest-varying one
+    // (see MakeTextureData's contiguous-extent check), which for the raw
+    // volume is true only for the axial (XY) slice. Permuting axes so that
+    // original X becomes this copy's slowest axis makes the sagittal pane
+    // hit that same fast path.
+    vtkSmartPointer<vtkImageData> m_sagittalImage;
     vtkSmartPointer<AsyncResliceImageViewerInteractorStyle> m_rivStyle;
     std::vector<vtkSmartPointer<vtkResliceImageViewer>> m_rivs;
     std::vector<AsyncRenderView*> m_views;
