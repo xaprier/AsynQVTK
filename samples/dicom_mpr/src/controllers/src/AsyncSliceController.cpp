@@ -2,6 +2,7 @@
 
 #include <vtkCamera.h>
 #include <vtkCommand.h>
+#include <vtkCullerCollection.h>
 #include <vtkGenericOpenGLRenderWindow.h>
 #include <vtkImageActor.h>
 #include <vtkImageData.h>
@@ -62,6 +63,18 @@ void AsyncSliceController::SetupViewers() {
         view->executeBlocking([&riv, orientation, rivStyle](vtkGenericOpenGLRenderWindow* window) {
             riv = vtkSmartPointer<vtkResliceImageViewer>::New();
             riv->SetRenderWindow(window);
+
+            // vtkFrustumCoverageCuller (renderer's default culler) calls
+            // GetBounds() on every prop every render, which can run a
+            // vtkAlgorithm pipeline update and land in
+            // vtkGarbageCollector::Collect(). That collector is a single
+            // process-wide singleton with no internal locking, so two panes'
+            // worker threads landing in it at the same time corrupts its
+            // shared state -- this crashed once (SIGSEGV in
+            // vtkGarbageCollectorImpl::VisitTarjan). Nothing in this scene
+            // needs frustum-coverage LOD, so drop the culler instead of
+            // trying to serialize around VTK's unsynchronized global.
+            riv->GetRenderer()->GetCullers()->RemoveAllItems();
 
             vtkRenderWindowInteractor* interactor = window->GetInteractor();
             if (interactor)
